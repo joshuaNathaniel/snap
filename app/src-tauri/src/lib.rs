@@ -7,11 +7,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 pub static OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Whether Snap runs in the tray. On macOS it is then an accessory app (no
+/// Dock icon, no menu bar), and an ordinary app while its overlay is open.
+pub static TRAY_MODE: AtomicBool = AtomicBool::new(false);
 pub static PRE_CAPTURED: AtomicBool = AtomicBool::new(false);
 
 // ----- Capture file path -----
 
 fn capture_temp_path() -> PathBuf {
+    if let Some(dir) = std::env::var_os("SNAP_DATA_DIR").filter(|dir| !dir.is_empty()) {
+        let dir = PathBuf::from(dir);
+        let _ = fs::create_dir_all(&dir);
+        return dir.join("capture.png");
+    }
     std::env::temp_dir().join("snap-capture.png")
 }
 
@@ -450,7 +458,15 @@ pub fn capture_and_store_window_context() {
 }
 
 #[tauri::command]
-fn get_active_window_context() -> Result<WindowContext, String> {
+async fn get_active_window_context() -> Result<WindowContext, String> {
+    // AppleScript can send events back to Snap when it is still frontmost.
+    // Keep the UI thread free to answer those events during repeated captures.
+    tauri::async_runtime::spawn_blocking(collect_active_window_context)
+        .await
+        .map_err(|e| format!("Window context task failed: {}", e))?
+}
+
+fn collect_active_window_context() -> Result<WindowContext, String> {
     #[cfg(target_os = "windows")]
     {
         if let Ok(mut lock) = PRE_CAPTURED_CONTEXT.lock() {
@@ -479,7 +495,8 @@ fn get_active_window_context() -> Result<WindowContext, String> {
         }
 
         let title = run_xdotool(&["getactivewindow", "getwindowname"]);
-        let class = run_xdotool(&["getactivewindow", "getwindowclassname"]);
+        let class = run_xdotool(&["getactivewindow", "getwindowclassname"])
+            .or_else(active_window_class_xprop);
         let pid_str = run_xdotool(&["getactivewindow", "getwindowpid"]);
         let pid = pid_str.as_ref().and_then(|s| s.trim().parse::<u32>().ok());
 
@@ -644,6 +661,28 @@ fn get_active_window_context_macos() -> Result<WindowContext, String> {
     })
 }
 
+/// The active window's class from its WM_CLASS, for xdotool releases without
+/// getwindowclassname (Ubuntu 22.04 and 24.04 ship one from 2016).
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn active_window_class_xprop() -> Option<String> {
+    let id = run_xdotool(&["getactivewindow"])?;
+    let output = Command::new("xprop")
+        .args(["-id", id.trim(), "WM_CLASS"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // WM_CLASS(STRING) = "eog", "Eog": the instance, then the class.
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.split('"')
+        .skip(1)
+        .step_by(2)
+        .last()
+        .filter(|class| !class.is_empty())
+        .map(str::to_string)
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn run_xdotool(args: &[&str]) -> Option<String> {
     Command::new("xdotool")
@@ -720,9 +759,20 @@ fn read_capture_base64() -> Result<String, String> {
 // ----- Overlay lifecycle -----
 
 #[tauri::command]
-fn mark_overlay_closed() {
+fn mark_overlay_closed(_app: tauri::AppHandle) {
     OVERLAY_ACTIVE.store(false, Ordering::SeqCst);
+    #[cfg(target_os = "macos")]
+    back_to_tray(&_app);
     log_event("overlay closed");
+}
+
+/// Makes Snap an accessory app again once its overlay is closed, in tray mode:
+/// it lives in the menu bar's status area only.
+#[cfg(target_os = "macos")]
+pub fn back_to_tray(app: &tauri::AppHandle) {
+    if TRAY_MODE.load(Ordering::SeqCst) {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    }
 }
 
 /// Lets the frontend write diagnostics (viewport size, DPR, capture size)
@@ -734,19 +784,26 @@ fn frontend_log(msg: String) {
 
 // ----- Helpers -----
 
+pub fn data_dir() -> Result<PathBuf, String> {
+    if let Some(dir) = std::env::var_os("SNAP_DATA_DIR").filter(|dir| !dir.is_empty()) {
+        // A relative folder is the working folder's, made whole: a file
+        // manager asked to open it (Open Logs) does not start in Snap's.
+        return std::path::absolute(PathBuf::from(dir))
+            .map_err(|e| format!("SNAP_DATA_DIR is not a folder: {}", e));
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".snap"))
+        .ok_or_else(|| "Could not determine home directory".to_string())
+}
+
 fn inbox_dir() -> Result<PathBuf, String> {
-    let dir = dirs::home_dir()
-        .ok_or("Could not determine home directory")?
-        .join(".snap")
-        .join("inbox");
+    let dir = data_dir()?.join("inbox");
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create inbox: {}", e))?;
     Ok(dir)
 }
 
 pub fn log_event(msg: &str) {
-    let log_dir = dirs::home_dir()
-        .map(|h| h.join(".snap"))
-        .unwrap_or_else(|| std::env::temp_dir());
+    let log_dir = data_dir().unwrap_or_else(|_| std::env::temp_dir());
     let _ = fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("snap.log");
 
@@ -791,6 +848,60 @@ pub fn overlay_window_builder(
     // With no decorations the user cannot resize it anyway.
 }
 
+/// Gives the overlay's web view the keyboard. On macOS a window brought to
+/// the front keeps the keyboard itself, and its web view takes keys only
+/// once it is clicked: a tool's key pressed as the overlay shows went
+/// nowhere.
+#[cfg(target_os = "macos")]
+pub fn focus_overlay_webview(window: &tauri::WebviewWindow) {
+    let result = window.with_webview(|webview| {
+        let ns_window = webview.ns_window() as *mut objc2::runtime::AnyObject;
+        let view = webview.inner() as *mut objc2::runtime::AnyObject;
+        if ns_window.is_null() || view.is_null() {
+            return;
+        }
+        // SAFETY: both are the overlay's live NSWindow and WKWebView, and
+        // with_webview runs this on the main thread.
+        let taken: bool = unsafe { objc2::msg_send![ns_window, makeFirstResponder: view] };
+        if !taken {
+            log_event("overlay web view did not take the keyboard");
+        }
+    });
+    if let Err(e) = result {
+        log_event(&format!(
+            "overlay web view not reached for the keyboard: {}",
+            e
+        ));
+    }
+}
+
+/// Sets how opaque the overlay's window is. On macOS the overlay shows as it
+/// is made (a hidden one crashed WebKit), see-through until the frontend has
+/// drawn the picture (overlay_drawn): never white, then black, then Snap.
+#[cfg(target_os = "macos")]
+pub fn set_overlay_alpha(window: &tauri::WebviewWindow, alpha: f64) {
+    let result = window.with_webview(move |webview| {
+        let ns_window = webview.ns_window() as *mut objc2::runtime::AnyObject;
+        if ns_window.is_null() {
+            return;
+        }
+        // SAFETY: the overlay's live NSWindow, and with_webview runs this on
+        // the main thread.
+        let _: () = unsafe { objc2::msg_send![ns_window, setAlphaValue: alpha] };
+    });
+    if let Err(e) = result {
+        log_event(&format!("overlay window not reached to show it: {}", e));
+    }
+}
+
+/// The frontend has drawn the picture: the overlay shows (on macOS; elsewhere
+/// it shows as the frontend shows it).
+#[tauri::command]
+fn overlay_drawn(_window: tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    set_overlay_alpha(&_window, 1.0);
+}
+
 // ----- Public: generate the invoke handler -----
 
 pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool {
@@ -801,5 +912,6 @@ pub fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool {
         read_capture_base64,
         mark_overlay_closed,
         frontend_log,
+        overlay_drawn,
     ]
 }

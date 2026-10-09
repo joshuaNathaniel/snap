@@ -36,3 +36,7 @@ tasks/
 .vscode/
 .idea/
 *.pyc
+
+# axx runtime state and logs
+.axx/
+build/axx/

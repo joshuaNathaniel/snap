@@ -10,9 +10,12 @@ from mcp.types import TextContent
 
 mcp = FastMCP(name="snap-mcp")
 
-INBOX = Path.home() / ".snap" / "inbox"
-STATE_FILE = Path.home() / ".snap" / ".last_read"
-LOG_FILE = Path.home() / ".snap" / "snap.log"
+# An alternate data directory lets separate MCP instances use separate inboxes.
+# Desktop captures continue to use ~/.snap unless their files are copied here.
+DATA_DIR = Path(os.environ.get("SNAP_DATA_DIR") or Path.home() / ".snap").expanduser()
+INBOX = DATA_DIR / "inbox"
+STATE_FILE = DATA_DIR / ".last_read"
+LOG_FILE = DATA_DIR / "snap.log"
 
 
 # ----- Helpers -----

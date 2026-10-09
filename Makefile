@@ -1,4 +1,4 @@
-.PHONY: build install start stop restart logs status clean dev deps deps-macos deps-linux setup-mcp hotkey doctor
+.PHONY: build install start stop restart logs status clean dev deps deps-macos deps-linux setup-mcp hotkey doctor test-acceptance
 
 OS := $(shell uname -s)
 TAURI_BUILD_ARGS :=
@@ -24,9 +24,10 @@ deps-macos:
 
 # Linux (Ubuntu/Debian). Wayland capture goes through the desktop portal;
 # gnome-screenshot is the fallback for GNOME older than 50 and is no longer
-# preinstalled on Ubuntu. scrot + xdotool cover X11.
+# preinstalled on Ubuntu. scrot + xdotool cover X11 (and xprop, for the window
+# class with older xdotool).
 deps-linux:
-	sudo apt install -y gnome-screenshot scrot xdotool pkg-config libwebkit2gtk-4.1-dev \
+	sudo apt install -y gnome-screenshot scrot xdotool x11-utils pkg-config libwebkit2gtk-4.1-dev \
 		build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
 build:
@@ -118,6 +119,10 @@ hotkey:
 # Check the install end to end.
 doctor:
 	./snap-doctor.sh
+
+# Install the MCP dependencies first; see README.md > Tests.
+test-acceptance:
+	axx run --compact
 
 clean:
 	rm -rf app/src-tauri/target app/node_modules

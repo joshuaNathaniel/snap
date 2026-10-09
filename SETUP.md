@@ -52,10 +52,10 @@ Snap tries capture tools in order of preference and uses the first one that work
 ### Window Context (Optional, X11 only)
 
 ```bash
-sudo apt install xdotool
+sudo apt install xdotool x11-utils
 ```
 
-This captures the active window title, class, and PID when you trigger Snap. On Wayland, window context is not available (GNOME doesn't expose it to external tools). The sidecar JSON will have `null` for these fields on Wayland — annotations still work fine, the agent just won't know which window you were looking at.
+This captures the active window title, class, and PID when you trigger Snap. `xprop` (x11-utils) reads the class where xdotool cannot (Ubuntu 22.04 and 24.04 ship an xdotool without `getwindowclassname`). On Wayland, window context is not available (GNOME doesn't expose it to external tools). The sidecar JSON will have `null` for these fields on Wayland — annotations still work fine, the agent just won't know which window you were looking at.
 
 ---
 
@@ -332,6 +332,8 @@ This project uses Snap for visual annotations. Call `check_new_annotations()` at
 | `~/.snap/snap.log` | Event log (auto-rotates at 1MB, one backup at `snap.log.old`) |
 | `~/.snap/.last_read` | MCP server's read cursor (tracks which annotations are "new") |
 | `~/.snap/snap-tray.lock` | Keeps a second tray app from starting (tray mode only) |
+
+`SNAP_DATA_DIR` moves all of these to another folder; the app and the MCP server both read it.
 | `/tmp/snap-capture.png` | Temporary screen capture (in `$TMPDIR` if set; overwritten each time) |
 | `/tmp/snap-overlay.lock` | Lock file preventing concurrent overlays (Wayland trigger script) |
 

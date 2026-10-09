@@ -3549,6 +3549,7 @@ dependencies = [
  "dirs 5.0.1",
  "gio",
  "glib",
+ "objc2",
  "png",
  "screenshots",
  "serde",

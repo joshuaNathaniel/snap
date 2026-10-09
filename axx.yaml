@@ -1,0 +1,143 @@
+# yaml-language-server: $schema=https://axx.nimbusxr.us/schemas/v0/axx.schema.json
+version: 1
+
+run:
+  paths: [features]
+  tags: not @desktop
+  # The app has one inbox and read marker. These scenarios must run alone,
+  # including when callers override --workers.
+  exclusive: ["@mcp", "@desktop"]
+  timeouts:
+    step: 30s
+    scenario: 90s
+
+properties:
+  python: mcp-server/.venv/bin/python
+  snap.port: 8765
+  # The desktop scenarios differ by OS where the part of the screen is chosen:
+  # macOS asks at its crosshair over the backdrop, before Snap shows; Windows
+  # and Linux in Snap's screenshot; on Wayland Snap opens as it starts.
+  hotkey.app: backdrop
+  screen.app: snap
+  screen.image: Screenshot
+  # Snap's icon in the tray, as its tooltip names it.
+  tray.icon: Snap — Ctrl+Shift+S to annotate
+  # The backdrop window's title and kind, which Snap keeps with a picture.
+  picture.title: ""
+  picture.class: ""
+  # Microsoft Edge, the Windows backdrop.
+  edge: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+  # Snap's data folder, where its MCP server reads what the app saved.
+  snap.data: ""
+
+services:
+  snap:
+    dir: .
+    # FastMCP exposes the existing server object over HTTP for a shared app.
+    # The normal `snap` command continues to use stdio.
+    command:
+      - ${sys:python}
+      - -m
+      - fastmcp.cli
+      - run
+      - mcp-server/server.py:mcp
+      - --transport
+      - http
+      - --host
+      - 127.0.0.1
+      - --port
+      - ${sys:snap.port}
+      - --no-banner
+    env:
+      SNAP_DATA_DIR: .axx/snap-mcp
+    ready:
+      tcp: 127.0.0.1:${sys:snap.port}
+      timeout: 30s
+
+lint:
+  rules:
+    - name: unique-capture-fixtures
+      description: Each saved screenshot belongs to one scenario.
+      filePatterns: ["features/*.feature"]
+      regex: 'the (snap-[^ ]+)\.json file in the inbox folder has the content:'
+      validation: global-unique
+
+profiles:
+  desktop-macos:
+    run:
+      tags: "@desktop"
+    services:
+      snap:
+        enabled: false
+    properties:
+      screen.app: backdrop
+      screen.image: xpath=//AXImage
+      picture.title: backdrop.png
+      picture.class: Preview
+      snap.data: .axx/desktop/macos/snap/.snap
+    packs:
+      desktop-core:
+        screenshots:
+          folder: acceptance/screenshots
+      files:
+        screenshots:
+          folder: acceptance/screenshots
+  desktop-linux:
+    run:
+      tags: "@desktop"
+    services:
+      snap:
+        enabled: false
+    properties:
+      # Linux's tray shows no tooltips: the icon is named by its title.
+      tray.icon: snap
+      picture.title: backdrop.png
+      picture.class: Eog
+      snap.data: .axx/desktop/linux/snap/.snap
+    packs:
+      desktop-core:
+        screenshots:
+          folder: acceptance/screenshots
+      files:
+        screenshots:
+          folder: acceptance/screenshots
+  # Over desktop-linux: GNOME Shell on Wayland, where Snap opens as it starts
+  # (the desktop's own hotkey starts it) and is told no window.
+  wayland:
+    run:
+      tags: "@desktop and not @tray-menu and not @hotkey-again"
+    properties:
+      hotkey.app: snap
+      picture.title: "null"
+      picture.class: "null"
+    packs:
+      desktop-linux:
+        display: wayland
+      desktop-core:
+        screenshots:
+          folder: acceptance/screenshots/wayland
+      files:
+        screenshots:
+          folder: acceptance/screenshots/wayland
+  desktop-windows:
+    run:
+      tags: "@desktop"
+    services:
+      snap:
+        enabled: false
+    properties:
+      python: mcp-server/.venv/Scripts/python.exe
+      # Edge's title, as Windows has it: a zero-width space before "Edge".
+      picture.title: "Adjective - [InPrivate] - Microsoft\u200b Edge"
+      picture.class: Chrome_WidgetWin_1
+      snap.data: .axx/desktop/windows/snap/.snap
+    packs:
+      desktop-core:
+        screenshots:
+          folder: acceptance/screenshots
+      files:
+        screenshots:
+          folder: acceptance/screenshots
+  windows:
+    properties:
+      python: mcp-server/.venv/Scripts/python.exe

@@ -26,18 +26,18 @@ class AnnotationToolTests(unittest.TestCase):
         self.older = self._write("snap-20990101-000000-000", self.png_bytes)
         self.newer = self._write("snap-20990102-000000-000", self.png_bytes)
 
-        self.old_home = os.environ.get("HOME")
-        os.environ["HOME"] = str(self.home)
+        self.old_data_dir = os.environ.get("SNAP_DATA_DIR")
+        os.environ["SNAP_DATA_DIR"] = str(self.home / ".snap")
 
         if "server" in sys.modules:
             del sys.modules["server"]
         self.server = importlib.import_module("server")
 
     def tearDown(self):
-        if self.old_home is None:
-            os.environ.pop("HOME", None)
+        if self.old_data_dir is None:
+            os.environ.pop("SNAP_DATA_DIR", None)
         else:
-            os.environ["HOME"] = self.old_home
+            os.environ["SNAP_DATA_DIR"] = self.old_data_dir
 
     def _write(self, stem: str, png: bytes | None) -> Path:
         base = self.inbox / stem
