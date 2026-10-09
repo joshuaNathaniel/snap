@@ -311,9 +311,13 @@ snap/
   snap-doctor.sh            Checks capture tool, display, hotkey, MCP registration
   snap.service              systemd user service (X11 tray mode)
   snap.plist                launchd agent template (macOS, installed by make install)
-  .github/workflows/        Release build for Linux, macOS, Windows, triggered by v*.*.* tags
+  .github/workflows/        Release build for Linux, macOS, Windows (v*.*.* tags); acceptance tests (pull requests, main)
+  features/                 Acceptance tests (axx): the MCP server, and the desktop app in features/desktop/
+  acceptance/               Their fixtures, screenshots, and the Linux desktop image
+  axx.yaml, axx-packs.yaml  axx's configuration and packs
   Makefile                  Build, install, hotkey, doctor, start/stop commands
   CLAUDE.md                 Project instructions for Claude Code
+  AGENTS.md                 How agents write and run the acceptance tests (axx)
   SETUP.md                  Detailed setup guide (Linux)
   LICENSE                   MIT
 ```
@@ -324,6 +328,131 @@ snap/
 node --test app/src/export-scale.test.mjs
 cd mcp-server && .venv/bin/python -m unittest discover -s tests
 ```
+
+Acceptance tests use [axx](https://axx.nimbusxr.us/) v0.2.7. From the repository
+root, install the MCP server dependencies and run the suite:
+
+```bash
+uv venv mcp-server/.venv
+uv pip install --python mcp-server/.venv/bin/python -e ./mcp-server
+axx run --compact                 # or: make test-acceptance
+```
+
+`services.snap` in `axx.yaml` starts the real MCP server using FastMCP's HTTP
+transport on `127.0.0.1:8765`, waits for readiness, and stops it after the run.
+The normal `snap` executable still uses stdio. For repeated runs against the
+same application process:
+
+```bash
+axx up
+axx run --compact
+axx down
+```
+
+The scenarios in `features/` cover tool discovery, empty inboxes, annotation
+metadata and ordering, unread tracking, missing images, corrupt sidecars, image
+size warnings, and clearing screenshot pairs. The app uses `.axx/snap-mcp/` for
+its test data. Each scenario resets the inbox and read marker; `run.exclusive`
+keeps these scenarios serial even with `--workers`, because they share one inbox.
+Personal captures remain in `~/.snap/inbox/`.
+
+The default MCP suite requires no Tauri build, display server, or screen-recording permission.
+The desktop acceptance tests run separately as described below. The
+existing Python tests also check image content blocks through an in-memory MCP
+client.
+
+```bash
+axx validate                     # check Gherkin and step definitions
+axx run --tags @unread            # run one area
+axx run --order random:42         # verify resets in a different order
+axx steps show mcp.server        # the MCP pack's server step
+```
+
+On Windows, run these commands from the repository root:
+
+```powershell
+python -m venv mcp-server/.venv
+mcp-server/.venv/Scripts/python.exe -m pip install -e ./mcp-server
+axx run --profile windows --compact
+```
+
+A different interpreter can be selected with
+`-D python=/absolute/path/to/python`, or a different port with `-D snap.port=8766`.
+Use the same profile and properties for `axx up` and subsequent runs.
+
+The suite uses axx's `mcp` and `files` packs. Each scenario empties the MCP
+server's data folder, puts the captures it needs in the inbox (a PNG and its JSON
+sidecar), and checks what the server left there. GitHub Actions runs the suite on
+pull requests and pushes to `main`, and uploads JUnit and HTML reports.
+
+`SNAP_DATA_DIR` overrides the data directory for both the desktop app and MCP
+server (default `~/.snap`). It includes `inbox/` and `snap.log`, the server's
+`.last_read`, and the desktop's capture scratch file and tray lock. The acceptance
+configuration gives each app its own directory under `.axx/`.
+
+#### Desktop acceptance tests
+
+The features in `features/desktop/` use the real app as a person does, on
+macOS, Windows, and Linux (X11 and Wayland): the hotkey, the overlay's tools,
+colors and widths, each tool's key, undo, clear, dimming, the region tool,
+closing without saving, moving the toolbar, quitting and opening Snap's folder
+from the tray icon's menu, and an agent reading what was saved through the MCP
+server, which runs over stdio on the app's own data folder.
+
+On the screen is a known picture, Adjective's home page
+(`acceptance/fixtures/backdrop.png`), shown by Preview on macOS, by Microsoft
+Edge on Windows (`acceptance/fixtures/backdrop.html`), and by GNOME's image
+viewer on Linux. Each saved picture is compared with a screenshot in
+`acceptance/screenshots/`, one per platform, and its sidecar is checked. Where
+the part of the screen is chosen differs by OS (macOS asks at its crosshair,
+Windows and Linux in Snap's own screenshot, Wayland opens Snap as it starts),
+so a few steps name their app by a property each profile sets.
+
+macOS, with Node 22+, Rust, the Xcode command-line tools, and a signed-in
+desktop:
+
+```bash
+(cd app && npx tauri build --bundles app)
+axx run --profile desktop-macos
+```
+
+Allow Screen Recording for Snap when macOS asks. A build signed with your
+identity keeps it (`APPLE_SIGNING_IDENTITY` set for `tauri build`); an unsigned
+build needs it again after every build: `tccutil reset ScreenCapture com.adjective.snap`. Leave the mouse and keyboard
+alone during the run.
+
+Windows, from the repository root, with the MCP server installed as above:
+
+```powershell
+cd app; npx tauri build --no-bundle; cd ..
+axx run --profile desktop-windows
+```
+
+Linux runs in Docker, in an image with the desktops, the build tools, and the
+capture tools (`acceptance/linux/`). It builds Snap from the checkout and runs
+the features with the Linux `axx` you mount:
+
+```bash
+docker build -t snap-acceptance acceptance/linux
+docker run --rm --shm-size=1g --tmpfs /run/systemd \
+  -v "$PWD:/src:ro" -v /path/to/linux/axx:/usr/local/bin/axx:ro \
+  snap-acceptance snap-acceptance x11      # or wayland
+```
+
+In CI (`.github/workflows/acceptance.yml`), the desktop features run on GitHub's
+macOS and Windows runners and, in the Linux image, on X11 and Wayland. Each job keeps
+its report and an MP4 video of every scenario as an artifact (`desktop-macos`,
+`desktop-windows`, `desktop-x11`, `desktop-wayland`), and a failure its traces and
+any screenshot it took that `acceptance/screenshots/` has none of (`screenshots/`). On
+the macOS runner the job first allows Snap what a person allows it the first time
+(the Automation and Screen Recording prompts), as no one is there to answer them.
+Locally, `--set packs.desktop-core.videos=always` keeps the videos in
+`.axx/desktop/videos/`.
+
+On Linux, `axx` keeps the desktop's tray, so the tray icon's menu is chosen
+through it. On Wayland, Snap starts per picture (the desktop's hotkey starts
+it), so the scenarios that press Snap's own hotkey again run on the other
+platforms only.
 
 ### Platform Support
 

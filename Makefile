@@ -1,4 +1,4 @@
-.PHONY: build install start stop restart logs status clean dev deps deps-macos deps-linux setup-mcp hotkey doctor
+.PHONY: build install start stop restart logs status clean dev deps deps-macos deps-linux setup-mcp hotkey doctor test-acceptance
 
 OS := $(shell uname -s)
 TAURI_BUILD_ARGS :=
@@ -119,6 +119,10 @@ hotkey:
 # Check the install end to end.
 doctor:
 	./snap-doctor.sh
+
+# Install the MCP dependencies first; see README.md > Tests.
+test-acceptance:
+	axx run --compact
 
 clean:
 	rm -rf app/src-tauri/target app/node_modules

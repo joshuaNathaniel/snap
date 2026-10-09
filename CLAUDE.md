@@ -8,6 +8,7 @@ A two-component system: a Tauri 2.x desktop app (Rust + vanilla JS) for screen a
 
 - `app/` -- Tauri 2.x project. Vanilla HTML/CSS/JS frontend, no framework. Rust backend handles screen capture, window context, and file I/O.
 - `mcp-server/` -- Python package using `fastmcp`. Stdio transport. Reads from `~/.snap/inbox/` (`SNAP_DATA_DIR` moves it).
+- `features/` -- acceptance tests with axx: the MCP server, and the desktop app in `features/desktop/`. `AGENTS.md` says how to write and run them.
 
 ## Key decisions
 
@@ -41,10 +42,12 @@ npx tauri build     # Rebuild Tauri app only (must use this, not cargo build alo
 ```bash
 node --test app/src/export-scale.test.mjs
 cd mcp-server && .venv/bin/python -m unittest discover -s tests
+axx run --compact   # acceptance tests of the MCP server; the desktop app's: README.md > Tests
 ```
 
 ## Layout
 
+- Acceptance tests run in `.github/workflows/acceptance.yml` on pull requests and pushes to main: the MCP suite, and the desktop suite on Linux X11 and Wayland in `acceptance/linux`'s image.
 - Releases: pushing a `v*.*.*` tag runs `.github/workflows/release.yml`, which builds Linux, macOS (arm64 + x86_64), and Windows and attaches the files to a GitHub release. `install.sh` downloads those assets by name (`snap-linux-x86_64`, `snap-macos-<arch>.zip`); keep the names in sync.
 - Root scripts (`install.sh`, `snap-trigger.sh`, `install-hotkey.sh`, `setup-mcp.sh`, `snap-doctor.sh`) resolve the repo from their own location and are referenced by absolute path from users' hotkey and MCP configs. Do not move them.
 

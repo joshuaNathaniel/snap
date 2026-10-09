@@ -1,0 +1,259 @@
+name: Acceptance tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Run on any branch by hand: a fork's branch, before a pull request.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install MCP server
+        run: |
+          python -m venv mcp-server/.venv
+          mcp-server/.venv/bin/python -m pip install -e ./mcp-server
+      - uses: nimbusxr/setup-axx@v0
+        with:
+          version: v0.2.7
+      - name: Validate acceptance scenarios
+        run: axx validate
+      - name: Run acceptance scenarios
+        run: axx run --compact --format junit:build/axx/junit.xml --format html:build/axx/report.html
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: axx-report
+          path: build/axx/
+
+  # The desktop features (features/desktop) against Snap's Linux build, on X11 and, in a GNOME
+  # session of its own, on Wayland, in Snap's acceptance image (acceptance/linux), which draws
+  # what the screenshots kept show. macOS and Windows have jobs of their own, below.
+  desktop:
+    name: desktop (${{ matrix.display }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        display: [x11, wayland]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: nimbusxr/setup-axx@v0
+        with:
+          version: v0.2.7
+      # axx builds itself with the project's packs once; the container uses that build.
+      - name: Prepare axx's packs
+        run: axx validate
+      - uses: docker/setup-buildx-action@v3
+      - name: Snap's acceptance image
+        uses: docker/build-push-action@v6
+        with:
+          context: acceptance/linux
+          tags: snap-acceptance
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/target
+          key: snap-target-${{ runner.arch }}-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+      - name: Desktop features
+        env:
+          DISPLAY_SERVER: ${{ matrix.display }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out" "$RUNNER_TEMP/target"
+          # GNOME Shell takes /run/systemd/seats for logind's, which a container has not.
+          docker run --rm --shm-size=1g --tmpfs /run/systemd \
+            -v "$PWD:/src:ro" -v "$(command -v axx):/usr/local/bin/axx:ro" -v "$HOME/.cache/axx:/root/.cache/axx" \
+            -v "$RUNNER_TEMP/target:/work/snap/app/src-tauri/target" -v "$RUNNER_TEMP/out:/out" \
+            snap-acceptance snap-acceptance "$DISPLAY_SERVER" --format progress --format junit:/out/junit.xml \
+            --format html:/out/report.html --set packs.desktop-core.videos=always --set packs.desktop-core.traces=failed
+      # Every run keeps its report and a video of each scenario (videos/, MP4), and a failure
+      # its traces and the screenshots it took that the repository has none of (screenshots/).
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.display }}
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # The desktop features against Snap's macOS build, on the runner's desktop.
+  desktop-macos:
+    name: desktop (macos)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: app/src-tauri/target
+          key: snap-target-macos-${{ runner.arch }}-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+      - name: Snap
+        working-directory: app
+        run: |
+          npm ci
+          npx tauri build --bundles app
+      - name: Install MCP server
+        run: |
+          python -m venv mcp-server/.venv
+          mcp-server/.venv/bin/python -m pip install -e ./mcp-server
+      # On a person's Mac, Snap is allowed once, as it first asks: to ask System Events and the
+      # app in front which window it opens over, and to take the picture (and, on macOS 15, to
+      # go on taking it without the system's window picker). On the runner no one can answer,
+      # so the job allows it as GitHub's macOS images let a job: in their TCC databases
+      # (actions/runner-images#9529), and in replayd's approvals, as Allow keeps it there.
+      - name: Allow Snap what a person allows it
+        run: |
+          now=$(date +%s)
+          cols=service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified,pid,pid_version,boot_uuid,last_reminded
+          for db in "$HOME/Library/Application Support/com.apple.TCC/TCC.db" "/Library/Application Support/com.apple.TCC/TCC.db"; do
+            for row in \
+              "'kTCCServiceAppleEvents','com.adjective.snap',0,2,3,1,NULL,NULL,0,'com.apple.systemevents',NULL,NULL" \
+              "'kTCCServiceAppleEvents','com.adjective.snap',0,2,3,1,NULL,NULL,0,'com.apple.Preview',NULL,NULL" \
+              "'kTCCServiceScreenCapture','com.adjective.snap',0,2,3,1,NULL,NULL,NULL,'UNUSED',NULL,0"; do
+              sudo sqlite3 "$db" "INSERT OR REPLACE INTO access ($cols) VALUES($row,$now,NULL,NULL,'UNUSED',$now);"
+            done
+          done
+          # replayd keeps an app's approval by its bundle's URL, as the image keeps its agent's.
+          approvals="$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals"
+          snap="file://$PWD/app/src-tauri/target/release/bundle/macos/snap.app/"
+          defaults write "$approvals" "$snap" -dict-add kScreenCaptureApprovalLastUsed -date "$(date -u '+%Y-%m-%d %H:%M:%S +0000')"
+          defaults write "$approvals" "$snap" -dict-add kScreenCaptureApprovalLastAlerted -date "3024-01-01 00:00:00 +0000"
+          defaults write "$approvals" "$snap" -dict-add kScreenCapturePrivacyHintDate -date "3024-01-01 00:00:00 +0000"
+          # And the shell axx runs in, whose window captures (screenshots, videos) are bash's.
+          defaults write "$approvals" /bin/bash -dict-add kScreenCaptureApprovalLastUsed -date "$(date -u '+%Y-%m-%d %H:%M:%S +0000')"
+          defaults write "$approvals" /bin/bash -dict-add kScreenCaptureApprovalLastAlerted -date "3024-01-01 00:00:00 +0000"
+          defaults write "$approvals" /bin/bash -dict-add kScreenCapturePrivacyHintDate -date "3024-01-01 00:00:00 +0000"
+          # replayd reads the approvals at its first capture and keeps them: it reads them again
+          # as it starts again.
+          killall replayd 2> /dev/null || true
+          sleep 1
+      # The runner's screen is 1024x768, smaller than Snap's picture: 1920x1080 when its display has it.
+      - name: The screen
+        run: |
+          brew install jakehilborn/jakehilborn/displayplacer
+          displayplacer list
+          id=$(displayplacer list | sed -n 's/^Persistent screen id: //p' | head -n 1)
+          displayplacer "id:$id res:1920x1080 scaling:off origin:(0,0) degree:0" || true
+          displayplacer list | grep -E "^Resolution|Persistent screen id" || true
+      - uses: nimbusxr/setup-axx@v0
+        with:
+          version: v0.2.7
+      - name: Desktop features
+        run: |
+          axx doctor --profile desktop-macos
+          axx run --profile desktop-macos --format progress --format junit:build/axx/junit.xml \
+            --format html:build/axx/report.html --set packs.desktop-core.videos=always --set packs.desktop-core.traces=failed
+      - if: always()
+        name: The run's videos and traces
+        shell: bash
+        run: cp -R .axx/desktop/videos .axx/desktop/traces build/axx/ 2> /dev/null || true
+      # A run takes a screenshot the repository has none of, and fails: those it took, to add.
+      - if: failure()
+        name: The screenshots the run took
+        shell: bash
+        run: |
+          git ls-files --others --modified acceptance/screenshots | while IFS= read -r f; do
+            mkdir -p "build/axx/screenshots/$(dirname "${f#acceptance/screenshots/}")"
+            cp "$f" "build/axx/screenshots/${f#acceptance/screenshots/}"
+          done
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-macos
+          path: build/axx/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # The desktop features against Snap's Windows build, on the runner's desktop.
+  desktop-windows:
+    name: desktop (windows)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: app/src-tauri/target
+          key: snap-target-windows-${{ runner.arch }}-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+      - name: Snap
+        working-directory: app
+        run: |
+          npm ci
+          npx tauri build --no-bundle
+      - name: Install MCP server
+        run: |
+          python -m venv mcp-server/.venv
+          mcp-server/.venv/Scripts/python.exe -m pip install -e ./mcp-server
+      - name: The screen
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_VideoController | Format-List Name, CurrentHorizontalResolution, CurrentVerticalResolution
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop } catch { "Set-DisplayResolution: $_" }
+          Get-CimInstance Win32_VideoController | Format-List CurrentHorizontalResolution, CurrentVerticalResolution
+          # The taskbar hides, as a person's often does: its clock would show in Snap's screenshots.
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StuckRects3'
+          $settings = (Get-ItemProperty -Path $key).Settings
+          $settings[8] = 3
+          Set-ItemProperty -Path $key -Name Settings -Value $settings
+          Stop-Process -Name explorer -Force
+          Start-Sleep -Seconds 5
+      - uses: nimbusxr/setup-axx@v0
+        with:
+          version: v0.2.7
+      - name: Desktop features
+        run: |
+          axx doctor --profile desktop-windows
+          axx run --profile desktop-windows --format progress --format junit:build/axx/junit.xml --format html:build/axx/report.html --set packs.desktop-core.videos=always --set packs.desktop-core.traces=failed
+      - if: always()
+        name: The run's videos and traces
+        shell: bash
+        run: cp -R .axx/desktop/videos .axx/desktop/traces build/axx/ 2> /dev/null || true
+      # A run takes a screenshot the repository has none of, and fails: those it took, to add.
+      - if: failure()
+        name: The screenshots the run took
+        shell: bash
+        run: |
+          git ls-files --others --modified acceptance/screenshots | while IFS= read -r f; do
+            mkdir -p "build/axx/screenshots/$(dirname "${f#acceptance/screenshots/}")"
+            cp "$f" "build/axx/screenshots/${f#acceptance/screenshots/}"
+          done
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-windows
+          path: build/axx/
+          if-no-files-found: ignore
+          retention-days: 30
