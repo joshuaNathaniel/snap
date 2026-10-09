@@ -190,6 +190,11 @@ html, body {
   color: #30D158;
 }
 
+.close-btn:hover {
+  background: rgba(255, 69, 58, 0.15);
+  color: #FF453A;
+}
+
 .save-btn.saving {
   animation: savePulse 0.4s ease;
 }

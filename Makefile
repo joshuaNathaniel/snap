@@ -24,9 +24,10 @@ deps-macos:
 
 # Linux (Ubuntu/Debian). Wayland capture goes through the desktop portal;
 # gnome-screenshot is the fallback for GNOME older than 50 and is no longer
-# preinstalled on Ubuntu. scrot + xdotool cover X11.
+# preinstalled on Ubuntu. scrot + xdotool cover X11 (and xprop, for the window
+# class with older xdotool).
 deps-linux:
-	sudo apt install -y gnome-screenshot scrot xdotool pkg-config libwebkit2gtk-4.1-dev \
+	sudo apt install -y gnome-screenshot scrot xdotool x11-utils pkg-config libwebkit2gtk-4.1-dev \
 		build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
 build:

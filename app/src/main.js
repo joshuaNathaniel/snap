@@ -198,21 +198,32 @@ async function startCaptureSession() {
     mark("decoded");
 
     const win = getCurrentWindow();
+    // The overlay takes input from the moment it shows: its tool and toolbar
+    // are set before, and the capture is laid out as it shows, so a drag right
+    // away chooses the part. Fullscreen and focus can take a moment (seconds
+    // on Wayland); the resize listener re-fits the capture when the size
+    // changes.
+    overlayActive = true;
+    selectTool(defaultTool);
+    toolbar.classList.add("visible");
     await win.show();
+    windowShown = true;
+    resizeCanvas();
     await win.setFullscreen(true);
     await win.setFocus();
-    windowShown = true;
     mark("shown");
 
-    // The window usually reaches its final size after show(); the resize
-    // listener re-fits the capture then. Fit once now for the case where the
-    // size does not change and no resize event fires.
+    // Fit once more for the case where the size changed and no resize event
+    // fired.
     resizeCanvas();
     logViewport("after show");
     // Two frames after the paint the compositor has the first real frame.
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         mark("first_frame");
+        // The picture is drawn: the overlay shows (macOS keeps it
+        // see-through until now).
+        invoke("overlay_drawn").catch(() => {});
         logViewport("first frame");
         logTiming();
       }),
@@ -223,15 +234,11 @@ async function startCaptureSession() {
     await getCurrentWindow().show();
     resizeCanvas();
     showError("Screen capture failed: " + e);
+    invoke("overlay_drawn").catch(() => {});
     setTimeout(() => closeOverlay(), 3000);
     return;
   }
 
-  overlayActive = true;
-
-  // The toolbar is there from the first frame on every platform.
-  selectTool(defaultTool);
-  toolbar.classList.add("visible");
 }
 
 // Diagnostics into ~/.snap/snap.log: what size the page thinks it is versus
@@ -388,10 +395,10 @@ function commitSelection(x, y, w, h) {
   // Selection is in window coords over the full-capture layout; convert to
   // capture pixels and clamp to the image (the drag may start in the letterbox).
   const raw = {
-    x: ((x - bgOffsetX) / bgDrawW) * backgroundImage.naturalWidth,
-    y: ((y - bgOffsetY) / bgDrawH) * backgroundImage.naturalHeight,
-    w: (w / bgDrawW) * backgroundImage.naturalWidth,
-    h: (h / bgDrawH) * backgroundImage.naturalHeight,
+    x: ((x - fullLayout.offsetX) / fullLayout.drawW) * backgroundImage.naturalWidth,
+    y: ((y - fullLayout.offsetY) / fullLayout.drawH) * backgroundImage.naturalHeight,
+    w: (w / fullLayout.drawW) * backgroundImage.naturalWidth,
+    h: (h / fullLayout.drawH) * backgroundImage.naturalHeight,
   };
   const clamped = mapCropToNative(raw, {
     previewWidth: backgroundImage.naturalWidth,
@@ -822,6 +829,7 @@ document.getElementById("btn-dim").addEventListener("click", () => {
 document.getElementById("btn-undo").addEventListener("click", undo);
 document.getElementById("btn-clear").addEventListener("click", clearAll);
 document.getElementById("btn-save").addEventListener("click", save);
+document.getElementById("btn-close").addEventListener("click", closeOverlay);
 
 // ----- Toolbar dragging -----
 let toolbarDragging = false;

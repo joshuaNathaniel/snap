@@ -53,9 +53,8 @@ fn is_process_running(pid: u32) -> bool {
 }
 
 fn try_acquire_single_instance() -> Result<SingleInstanceGuard, String> {
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let snap_dir = home.join(".snap");
-    fs::create_dir_all(&snap_dir).map_err(|e| format!("Failed to create ~/.snap: {}", e))?;
+    let snap_dir = snap_lib::data_dir()?;
+    fs::create_dir_all(&snap_dir).map_err(|e| format!("Failed to create data directory: {}", e))?;
 
     let lock_path = snap_dir.join("snap-tray.lock");
 
@@ -218,6 +217,7 @@ fn run_tray_mode() {
     };
 
     snap_lib::log_event("snap starting (tray mode)");
+    snap_lib::TRAY_MODE.store(true, Ordering::SeqCst);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -232,6 +232,8 @@ fn run_tray_mode() {
                 if snap_lib::OVERLAY_ACTIVE.swap(false, Ordering::SeqCst) {
                     snap_lib::log_event("overlay destroyed without close signal; hotkey re-armed");
                 }
+                #[cfg(target_os = "macos")]
+                snap_lib::back_to_tray(window.app_handle());
             }
         })
         .setup(|app| {
@@ -271,9 +273,8 @@ fn run_tray_mode() {
                 .menu(&menu)
                 .on_menu_event(|app, event| {
                     if event.id() == "open_logs" {
-                        let snap_dir = dirs::home_dir()
-                            .map(|h| h.join(".snap"))
-                            .unwrap_or_else(|| std::env::temp_dir());
+                        let snap_dir = snap_lib::data_dir()
+                            .unwrap_or_else(|_| std::env::temp_dir());
 
                         #[cfg(target_os = "windows")]
                         {
@@ -347,11 +348,25 @@ fn run_tray_mode() {
 
                         let handle_inner = handle.clone();
                         let dispatch_result = handle.run_on_main_thread(move || {
+                            // While the overlay is open, Snap is an ordinary app,
+                            // the one in front: macOS hides the menu bar and the
+                            // Dock over it (an accessory app's overlay sits under
+                            // the menu bar of the app before it), and its keys
+                            // reach it. It goes back to the tray as the overlay
+                            // closes (mark_overlay_closed).
+                            #[cfg(target_os = "macos")]
+                            let _ = handle_inner
+                                .set_activation_policy(tauri::ActivationPolicy::Regular);
+
                             #[cfg(target_os = "macos")]
                             {
                                 if let Some(window) = handle_inner.get_webview_window("overlay") {
+                                    // See-through until the frontend has drawn the new picture,
+                                    // not the last one.
+                                    snap_lib::set_overlay_alpha(&window, 0.0);
                                     let _ = window.show();
                                     let _ = window.set_focus();
+                                    snap_lib::focus_overlay_webview(&window);
                                     let _ = window.emit("snap://start", ());
                                     snap_lib::log_event("overlay window reused");
                                     return;
@@ -378,7 +393,28 @@ fn run_tray_mode() {
                             }
 
                             match builder.build() {
-                                Ok(_) => snap_lib::log_event("overlay window created"),
+                                Ok(_window) => {
+                                    // See-through until the frontend has drawn the picture.
+                                    #[cfg(target_os = "macos")]
+                                    snap_lib::set_overlay_alpha(&_window, 0.0);
+                                    // Simple fullscreen covers the screen at once,
+                                    // with no Space of its own to slide into, and
+                                    // makes the frontend's setFullscreen do nothing:
+                                    // macOS's native fullscreen does nothing for an
+                                    // app that was an accessory app, but give the
+                                    // window a title bar.
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        if let Err(e) = _window.set_simple_fullscreen(true) {
+                                            snap_lib::log_event(&format!(
+                                                "overlay could not cover the screen: {}",
+                                                e
+                                            ));
+                                        }
+                                        snap_lib::focus_overlay_webview(&_window);
+                                    }
+                                    snap_lib::log_event("overlay window created")
+                                }
                                 Err(e) => {
                                     snap_lib::log_event(&format!(
                                         "failed to create overlay: {}",
@@ -408,9 +444,12 @@ fn run_tray_mode() {
         .build(tauri::generate_context!())
         .expect("failed to build app")
         .run(|_app, event| {
-            // keep alive if no windows
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+            // Keep running when the last window closes: the tray stays. An exit
+            // asked for (Quit Snap) carries a code, and goes ahead.
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                }
             }
         });
 }

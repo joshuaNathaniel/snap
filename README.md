@@ -77,6 +77,8 @@ Every save produces a matched pair:
 }
 ```
 
+The inbox is `~/.snap/inbox/`, or `inbox/` in `SNAP_DATA_DIR` when that is set (the app and the MCP server both read it).
+
 All annotation coordinates and sizes are in pixels of the saved PNG (`image_size`), so an agent can locate them directly in the image. `capture_size` is the raw screen capture and `crop` is the region of it that was selected (`null` when the whole screen was kept). `session_type` is `x11`, `wayland`, `macos`, or `windows`; on Wayland the window fields are always `null` because the compositor does not expose the focused window.
 
 ---
@@ -85,7 +87,7 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 
 | Tool | Shortcut | Description |
 |------|----------|-------------|
-| Select region | `S` | Drag to choose the region to export; everything outside is dimmed. Click without dragging to go back to the whole screen. Active when the overlay opens on Linux and Windows. |
+| Select region | `S` | Drag to choose the region to export; everything outside is dimmed. Click without dragging to go back to the whole screen. Active when the overlay opens on Linux and Windows; on macOS the part is chosen at macOS's crosshair before the overlay opens. |
 | Circle | `C` | Click-drag to draw ellipses. Shift constrains to circle. |
 | Rectangle | `R` | Click-drag to draw boxes. Shift constrains to square. 10% fill for visibility. |
 | Arrow | `A` | Click start, drag to end. Arrowhead on the endpoint. |
@@ -101,7 +103,7 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 | `D` | Toggle dim layer (darkens background for contrast) |
 | `Ctrl+Z` | Undo last annotation |
 | `Enter` | Save annotated screenshot and close |
-| `Escape` | Abort the shape or region being dragged; otherwise discard and close |
+| `Escape` | Drop the label being typed, or abort the shape or region being dragged; otherwise discard and close |
 
 ### Toolbar
 
@@ -111,6 +113,7 @@ All annotation coordinates and sizes are in pixels of the saved PNG (`image_size
 - **Dim toggle**: Adds a dark overlay behind annotations for readability on busy screens
 - **Undo / Clear**: Remove the last annotation, or all of them
 - **Save**: The green checkmark, same as `Enter`
+- **Close**: The ✕ beside it, same as `Escape`: discard and close
 
 ---
 
@@ -326,7 +329,7 @@ cd mcp-server && .venv/bin/python -m unittest discover -s tests
 
 | Platform | Screen Capture | Window Context | Global Hotkey |
 |----------|---------------|----------------|---------------|
-| Linux X11 | `scrot` | `xdotool` (title, class, PID) | Tauri global-shortcut plugin (tray mode) |
+| Linux X11 | `scrot` | `xdotool` (title, class, PID), `xprop` for the class with older xdotool | Tauri global-shortcut plugin (tray mode) |
 | Linux Wayland (GNOME) | XDG desktop portal, then `gnome-screenshot` | Not available | GNOME custom keybinding → `snap-trigger.sh` |
 | Linux Wayland (wlroots) | XDG desktop portal, then `grim` | Not available | Compositor keybinding → `snap-trigger.sh` |
 | macOS | `screencapture` | AppleScript (title, URL, PID) | Tauri global-shortcut plugin (tray mode) |

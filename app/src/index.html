@@ -39,16 +39,22 @@
       <div class="toolbar-group">
         <button id="btn-dim" class="action-btn" title="Dim layer (D)">◐</button>
         <button id="btn-undo" class="action-btn" title="Undo (Ctrl+Z)">↩</button>
-        <button id="btn-clear" class="action-btn" title="Clear">✕</button>
+        <button id="btn-clear" class="action-btn" title="Clear">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2.5 4h11M6 4V2.5h4V4M4 4l.8 9.5h6.4L12 4M6.8 6.8v4M9.2 6.8v4" />
+          </svg>
+        </button>
       </div>
       <div class="toolbar-divider"></div>
       <div class="toolbar-group">
         <button id="btn-save" class="action-btn save-btn" title="Save (Enter)">✓</button>
+        <button id="btn-close" class="action-btn close-btn" title="Close (Esc)">✕</button>
       </div>
     </div>
 
     <!-- Main canvas -->
-    <canvas id="canvas"></canvas>
+    <canvas id="canvas" role="img" aria-label="Screenshot"></canvas>
 
     <!-- Text input overlay (hidden by default) -->
     <input type="text" id="text-input" placeholder="Type label..." />
